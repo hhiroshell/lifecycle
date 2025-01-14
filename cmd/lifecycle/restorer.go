@@ -263,6 +263,10 @@ func (r *restoreCmd) pullSparse(imageRef string) (imgutil.Image, error) {
 
 	// get local image
 	localImage, err := local.NewImage(imageRef, r.docker, local.FromBaseImage(imageRef))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get local image: %w", err)
+	}
+
 	// check for usable kaniko dir
 	if _, err := os.Stat(kanikoDir); err != nil {
 		if !os.IsNotExist(err) {
