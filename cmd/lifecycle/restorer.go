@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,7 +10,7 @@ import (
 	"github.com/buildpacks/imgutil"
 	"github.com/buildpacks/imgutil/layout"
 	"github.com/buildpacks/imgutil/layout/sparse"
-	"github.com/buildpacks/imgutil/remote"
+	"github.com/buildpacks/imgutil/local"
 	"github.com/docker/docker/client"
 	"github.com/google/go-containerregistry/pkg/authn"
 
@@ -110,11 +111,11 @@ func (r *restoreCmd) Exec() error {
 	if analyzedMD, err = files.Handler.ReadAnalyzed(r.AnalyzedPath, cmd.DefaultLogger); err == nil {
 		if r.supportsBuildImageExtension() && r.BuildImageRef != "" {
 			cmd.DefaultLogger.Debugf("Pulling builder image metadata for %s...", r.BuildImageRef)
-			remoteBuildImage, err := r.pullSparse(r.BuildImageRef)
+			localBuildImage, err := r.pullSparse(r.BuildImageRef)
 			if err != nil {
 				return cmd.FailErr(err, fmt.Sprintf("pull builder image %s", r.BuildImageRef))
 			}
-			digestRef, err := remoteBuildImage.Identifier()
+			digestRef, err := localBuildImage.Digest()
 			if err != nil {
 				return cmd.FailErr(err, "get digest reference for builder image")
 			}
@@ -260,17 +261,8 @@ func (r *restoreCmd) pullSparse(imageRef string) (imgutil.Image, error) {
 		return nil, fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
-	var opts []imgutil.ImageOption
-	opts = append(opts, append(image.GetInsecureOptions(r.InsecureRegistries), remote.FromBaseImage(imageRef))...)
-
-	// get remote image
-	remoteImage, err := remote.NewImage(imageRef, r.keychain, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize remote image: %w", err)
-	}
-	if !remoteImage.Found() {
-		return nil, fmt.Errorf("failed to get remote image")
-	}
+	// get local image
+	localImage, err := local.NewImage(imageRef, r.docker, local.FromBaseImage(imageRef))
 	// check for usable kaniko dir
 	if _, err := os.Stat(kanikoDir); err != nil {
 		if !os.IsNotExist(err) {
@@ -279,7 +271,7 @@ func (r *restoreCmd) pullSparse(imageRef string) (imgutil.Image, error) {
 		return nil, nil
 	}
 	// save to disk
-	h, err := remoteImage.UnderlyingImage().Digest()
+	h, err := localImage.UnderlyingImage().Digest()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get remote image digest: %w", err)
 	}
@@ -287,7 +279,7 @@ func (r *restoreCmd) pullSparse(imageRef string) (imgutil.Image, error) {
 	cmd.DefaultLogger.Debugf("Saving image metadata to %s...", path)
 	sparseImage, err := sparse.NewImage(
 		path,
-		remoteImage.UnderlyingImage(),
+		localImage.UnderlyingImage(),
 		layout.WithMediaTypes(imgutil.DefaultTypes),
 	)
 	if err != nil {
@@ -296,7 +288,33 @@ func (r *restoreCmd) pullSparse(imageRef string) (imgutil.Image, error) {
 	if err = sparseImage.Save(); err != nil {
 		return nil, fmt.Errorf("failed to save sparse image: %w", err)
 	}
-	return remoteImage, nil
+
+	// for debbuging: print contents in OCI layout
+	err = filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			fmt.Printf("Error accessing path %s: %v\n", path, err)
+			return err
+		}
+		fmt.Println(path)
+
+		if info.IsDir() {
+			return nil
+		}
+
+		fmt.Printf("\nContents of %s:\n", path)
+		err = printJSONFile(path)
+		if err != nil {
+			return fmt.Errorf("Error reading index.json: %w", err)
+		}
+		fmt.Println()
+
+		return nil
+	})
+	if err != nil {
+		fmt.Printf("Error walking the path: %v\n", err)
+	}
+
+	return localImage, nil
 }
 
 func (r *restoreCmd) restore(layerMetadata files.LayersMetadata, group buildpack.Group, cacheStore phase.Cache) error {
@@ -316,5 +334,25 @@ func (r *restoreCmd) restore(layerMetadata files.LayersMetadata, group buildpack
 	if err := restorer.Restore(cacheStore); err != nil {
 		return cmd.FailErrCode(err, r.CodeFor(platform.RestoreError), "restore")
 	}
+	return nil
+}
+
+// for print debugging
+func printJSONFile(filename string) error {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+
+	var formattedJSON map[string]interface{}
+	if err := json.Unmarshal(data, &formattedJSON); err != nil {
+		return err
+	}
+
+	prettyJSON, err := json.MarshalIndent(formattedJSON, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(prettyJSON))
 	return nil
 }

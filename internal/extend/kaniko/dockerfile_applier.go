@@ -8,7 +8,6 @@ import (
 
 	"github.com/GoogleContainerTools/kaniko/pkg/config"
 	"github.com/containerd/containerd/platforms"
-	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
 
@@ -39,13 +38,9 @@ func NewDockerfileApplier() (*DockerfileApplier, error) {
 }
 
 func (a *DockerfileApplier) ImageFor(reference string) (v1.Image, error) {
-	digest, err := name.NewDigest(reference)
+	baseImage, err := readOCI(ociPrefix + filepath.Join(kanikoDir, "cache", "base", reference))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get digest for reference '%s': %w", reference, err)
-	}
-	baseImage, err := readOCI(ociPrefix + filepath.Join(kanikoDir, "cache", "base", digest.DigestStr()))
-	if err != nil {
-		return nil, fmt.Errorf("getting base image for digest '%s': %w", digest, err)
+		return nil, fmt.Errorf("getting base image for image id '%s': %w", reference, err)
 	}
 	return baseImage, nil
 }
